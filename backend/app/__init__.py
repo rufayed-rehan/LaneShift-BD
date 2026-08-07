@@ -1,2 +1,0 @@
-"""LaneShift BD API package."""
-
