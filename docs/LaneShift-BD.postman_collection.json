@@ -1,0 +1,47 @@
+{
+  "info": {
+    "name": "LaneShift BD API",
+    "description": "Demonstration requests for the LaneShift BD FastAPI backend.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:8000" },
+    { "key": "suggestionId", "value": "1" }
+  ],
+  "item": [
+    {
+      "name": "Health check",
+      "request": { "method": "GET", "url": "{{baseUrl}}/health" }
+    },
+    {
+      "name": "Dashboard summary",
+      "request": { "method": "GET", "url": "{{baseUrl}}/api/dashboard/summary" }
+    },
+    {
+      "name": "Corridor dashboard",
+      "request": { "method": "GET", "url": "{{baseUrl}}/api/dashboard/corridors" }
+    },
+    {
+      "name": "All segments",
+      "request": { "method": "GET", "url": "{{baseUrl}}/api/segments" }
+    },
+    {
+      "name": "Pending suggestions",
+      "request": { "method": "GET", "url": "{{baseUrl}}/api/suggestions?status=pending" }
+    },
+    {
+      "name": "Approve suggestion",
+      "request": {
+        "method": "PATCH",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"approved_by\": \"postman.operator\"\n}" },
+        "url": "{{baseUrl}}/api/suggestions/{{suggestionId}}/approve"
+      }
+    },
+    {
+      "name": "Generate today's plan",
+      "request": { "method": "POST", "url": "{{baseUrl}}/api/plans/2026-01-01/generate" }
+    }
+  ]
+}
+
