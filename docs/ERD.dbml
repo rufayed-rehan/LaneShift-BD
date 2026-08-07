@@ -1,0 +1,109 @@
+Table corridors {
+  corridor_id bigint [pk, increment]
+  name varchar [not null, unique]
+  city varchar [not null]
+  active boolean [not null]
+}
+
+Table road_segments {
+  segment_id bigint [pk, increment]
+  corridor_id bigint [not null, ref: > corridors.corridor_id]
+  segment_code varchar [not null, unique]
+  name varchar [not null]
+  total_lanes smallint [not null]
+  base_inbound_lanes smallint [not null]
+  base_outbound_lanes smallint [not null]
+  capacity_per_lane integer [not null]
+  active boolean [not null]
+}
+
+Table anpr_cameras {
+  camera_id bigint [pk, increment]
+  segment_id bigint [not null, ref: > road_segments.segment_id]
+  camera_code varchar [not null, unique]
+  monitored_direction varchar [not null]
+}
+
+Table traffic_readings {
+  reading_id bigint [pk, increment]
+  segment_id bigint [not null, ref: > road_segments.segment_id]
+  recorded_at timestamptz [not null]
+  inbound_vehicle_count integer [not null]
+  outbound_vehicle_count integer [not null]
+  avg_inbound_speed_kph numeric [not null]
+  avg_outbound_speed_kph numeric [not null]
+}
+
+Table vehicles {
+  vehicle_id bigint [pk, increment]
+  plate_number varchar [not null, unique]
+  vehicle_type varchar [not null]
+  registration_date date [not null]
+}
+
+Table vehicle_fitness_status {
+  fitness_id bigint [pk, increment]
+  vehicle_id bigint [not null, ref: > vehicles.vehicle_id]
+  certificate_number varchar [not null, unique]
+  inspected_at date [not null]
+  expiry_date date [not null]
+  status varchar [not null]
+}
+
+Table anpr_detections {
+  detection_id bigint [pk, increment]
+  camera_id bigint [not null, ref: > anpr_cameras.camera_id]
+  vehicle_id bigint [not null, ref: > vehicles.vehicle_id]
+  segment_id bigint [not null, ref: > road_segments.segment_id]
+  detected_at timestamptz [not null]
+  travel_direction varchar [not null]
+}
+
+Table reversible_lane_suggestions {
+  suggestion_id bigint [pk, increment]
+  segment_id bigint [not null, ref: > road_segments.segment_id]
+  evidence_window tstzrange [not null]
+  proposed_window tstzrange [not null]
+  recommended_inbound_lanes smallint [not null]
+  recommended_outbound_lanes smallint [not null]
+  status varchar [not null]
+}
+
+Table reversible_lane_schedules {
+  schedule_id bigint [pk, increment]
+  suggestion_id bigint [unique, ref: > reversible_lane_suggestions.suggestion_id]
+  segment_id bigint [not null, ref: > road_segments.segment_id]
+  active_window tstzrange [not null]
+  inbound_lanes smallint [not null]
+  outbound_lanes smallint [not null]
+  status varchar [not null]
+}
+
+Table reallocation_plans {
+  plan_id bigint [pk, increment]
+  plan_date date [not null, unique]
+  status varchar [not null]
+}
+
+Table plan_items {
+  plan_item_id bigint [pk, increment]
+  plan_id bigint [not null, ref: > reallocation_plans.plan_id]
+  segment_id bigint [not null, ref: > road_segments.segment_id]
+  suggestion_id bigint [ref: > reversible_lane_suggestions.suggestion_id]
+  action varchar [not null]
+}
+
+Table enforcement_teams {
+  team_id bigint [pk, increment]
+  team_code varchar [not null, unique]
+  team_name varchar [not null]
+}
+
+Table enforcement_deployments {
+  deployment_id bigint [pk, increment]
+  team_id bigint [not null, ref: > enforcement_teams.team_id]
+  segment_id bigint [not null, ref: > road_segments.segment_id]
+  plan_item_id bigint [ref: > plan_items.plan_item_id]
+  deployment_window tstzrange [not null]
+}
+
