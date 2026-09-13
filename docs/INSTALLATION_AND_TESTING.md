@@ -1,300 +1,252 @@
-# LaneShift BD — macOS Installation and Testing Guide
+# LaneShift BD — Installation and Testing
 
-This guide assumes no development tools are already installed. Follow the recommended column for the simplest setup. Alternatives are included so you can use software already familiar to you.
+## 1. Required applications
 
-## 1. Applications to use
+- Visual Studio Code
+- PostgreSQL 15 or newer
+- Python 3.11 or newer
+- Node.js 18 or newer
+- A modern browser
 
-| Purpose | Recommended application | Other valid options | Why it is needed |
-| --- | --- | --- | --- |
-| Code editor | Visual Studio Code | PyCharm + WebStorm, Cursor, Sublime Text | Open and edit the project files |
-| PostgreSQL server | Postgres.app | Homebrew PostgreSQL 16/17, EnterpriseDB installer | Runs the main database and all decision logic |
-| Database GUI | pgAdmin 4 | DBeaver, TablePlus, Postico | Optional visual access to tables and queries |
-| Python | Python 3.12 or newer from python.org | Homebrew Python | Runs FastAPI |
-| JavaScript runtime | Node.js LTS from nodejs.org | Homebrew Node.js | Runs the React dashboard |
-| API testing | FastAPI Swagger page | Postman, Bruno, Insomnia | Demonstrates and tests API endpoints |
-| Browser | Chrome | Safari, Firefox, Edge | Opens the dashboard |
-| ERD tool | dbdiagram.io | draw.io, DBeaver ERD | Opens `docs/ERD.dbml` as a diagram |
+Postgres.app is the simplest PostgreSQL option on macOS. pgAdmin and Postman are optional because the project includes SQL scripts and Swagger API documentation.
 
-The simplest combination is **Postgres.app + VS Code + Python installer + Node.js LTS + Chrome**. pgAdmin and Postman are optional because the project already includes browser-based API documentation.
+## 2. Open the project
 
-## 2. Install the applications
+In VS Code, select **File → Open Folder** and choose `LaneShift-BD`.
 
-### Step 2.1 — Install PostgreSQL with Postgres.app
-
-1. Visit <https://postgresapp.com/> and download the current stable version.
-2. Move `Postgres.app` into the macOS **Applications** folder.
-3. Open it and click **Initialize** if asked.
-4. Keep Postgres.app running while using LaneShift BD.
-5. Open Terminal and add the PostgreSQL commands to this Terminal session:
-
-   ```bash
-   export PATH="/Applications/Postgres.app/Contents/Versions/latest/bin:$PATH"
-   ```
-
-6. Make that setting permanent for future Terminal windows:
-
-   ```bash
-   echo 'export PATH="/Applications/Postgres.app/Contents/Versions/latest/bin:$PATH"' >> ~/.zshrc
-   source ~/.zshrc
-   ```
-
-7. Confirm the installation:
-
-   ```bash
-   psql --version
-   ```
-
-Alternative: if you prefer Homebrew, install it from <https://brew.sh/>, then run:
-
-```bash
-brew install postgresql@16
-brew services start postgresql@16
-echo 'export PATH="/opt/homebrew/opt/postgresql@16/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-On an Intel Mac, Homebrew may use `/usr/local/opt/postgresql@16/bin` instead of `/opt/homebrew/...`. `brew info postgresql@16` shows the correct line.
-
-### Step 2.2 — Install Python
-
-1. Visit <https://www.python.org/downloads/macos/>.
-2. Download and install Python 3.12 or newer.
-3. Confirm in Terminal:
-
-   ```bash
-   python3 --version
-   ```
-
-### Step 2.3 — Install Node.js
-
-1. Visit <https://nodejs.org/>.
-2. Download the **LTS** macOS installer, not the Current version.
-3. Confirm in Terminal:
-
-   ```bash
-   node --version
-   npm --version
-   ```
-
-### Step 2.4 — Install VS Code
-
-1. Visit <https://code.visualstudio.com/> and install the macOS build.
-2. Helpful optional extensions: **Python**, **SQLTools**, and **PostgreSQL**.
-
-## 3. Open and set up the project
-
-1. Unzip `LaneShift-BD.zip`.
-2. Move the resulting `LaneShift-BD` folder to Documents or Desktop.
-3. In Terminal, type `cd ` with a trailing space, drag the folder onto Terminal, and press Return. Example:
-
-   ```bash
-   cd ~/Documents/LaneShift-BD
-   ```
-
-4. Give the included scripts permission to run:
-
-   ```bash
-   chmod +x scripts/*.sh
-   ```
-
-5. Start Postgres.app.
-6. Run the complete setup:
-
-   ```bash
-   ./scripts/setup_mac.sh
-   ```
-
-The script creates `laneshift_bd`, installs all SQL objects and sample data, creates a Python virtual environment, installs backend packages, and installs frontend packages. The final SQL check must say **All database checks passed.**
-
-## 4. Start the project
-
-From the project root, run:
+This prepared copy can be started immediately from **Terminal → New Terminal**:
 
 ```bash
 ./scripts/start_all_mac.sh
 ```
 
-Keep that Terminal window open. Then open:
+Only for a fresh installation on another computer, confirm the Terminal is in the project root, then run:
+
+```bash
+chmod +x scripts/*.sh
+./scripts/setup_mac.sh
+```
+
+The setup script:
+
+1. Checks PostgreSQL, Python, and Node.js.
+2. Creates or reuses the `laneshift_bd` database.
+3. Builds all tables, constraints, functions, triggers, procedures, views, and seed data.
+4. Installs FastAPI, Psycopg, SimPy, Pytest, and the frontend packages.
+5. Runs the SQL verification, Python tests, and React production build.
+
+Successful setup ends with:
+
+```text
+Database verification, Python tests, and frontend build all passed.
+```
+
+`setup_mac.sh` recreates LaneShift BD's own project tables. To add the simulation extension to an existing version-1 database without removing its records, use:
+
+```bash
+psql -v ON_ERROR_STOP=1 -d laneshift_bd -f database/06_upgrade_v1_to_v2.sql
+```
+
+## 3. PostgreSQL connection settings
+
+The default `.env.example` works with password-free Postgres.app installations:
+
+```env
+DATABASE_URL=postgresql:///laneshift_bd
+API_HOST=127.0.0.1
+API_PORT=8000
+```
+
+For a password-based `postgres` account, create or edit `.env`:
+
+```env
+DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/laneshift_bd
+PGHOST=localhost
+PGUSER=postgres
+PGPASSWORD=YOUR_PASSWORD
+API_HOST=127.0.0.1
+API_PORT=8000
+```
+
+Do not commit `.env`; it is already excluded by `.gitignore`.
+
+## 4. Start the project
+
+```bash
+./scripts/start_all_mac.sh
+```
+
+Keep that Terminal open, then visit:
 
 - Dashboard: <http://127.0.0.1:5173>
-- API documentation: <http://127.0.0.1:8000/docs>
-- API health check: <http://127.0.0.1:8000/health>
+- Swagger API: <http://127.0.0.1:8000/docs>
+- Health check: <http://127.0.0.1:8000/health>
 
-Press **Control+C** in Terminal to stop both applications.
+Press **Control+C** to stop the project.
 
-### Alternative: use two Terminal windows
-
-Terminal 1:
+To run the backend and frontend separately:
 
 ```bash
 ./scripts/run_backend_mac.sh
 ```
 
-Terminal 2:
-
 ```bash
 ./scripts/run_frontend_mac.sh
 ```
 
-This option is useful while editing code because the API and UI can be restarted separately.
+## 5. Recommended first demonstration
 
-## 5. Demonstration sequence
+1. Open **Simulation lab**.
+2. Keep **Morning inbound surge** selected.
+3. Keep `AIR-01`, the six-lane Airport-to-Khilkhet segment.
+4. Keep random seed `4410`.
+5. Click **Run automated experiment**.
+6. Explain that SimPy replayed the same random vehicle stream against all five safe lane allocations.
+7. Point out that PostgreSQL selected `4 inbound / 2 outbound` instead of the fixed `3/3` split.
+8. Compare waiting time, queue length, speed, and completed vehicles.
+9. Show the queue chart and all candidate rows.
+10. Show the audit trail, **Run history**, and **DBMS evidence**.
 
-Use this exact order for a class demonstration:
+The exact values are generated, not hardcoded. With seed `4410`, the result is reproducible.
 
-1. Open the dashboard and explain the four summary cards.
-2. Show **Network pressure**. Explain that `corridor_dashboard` uses a `RANK()` window function to identify the worst segment in each corridor.
-3. Show the segment table. Explain that the unfit percentage comes from joining ANPR detections with each vehicle’s latest fitness record.
-4. Open **Suggestions** and click **Approve & schedule** on one pending item.
-5. Explain that the frontend only sends approval; PostgreSQL’s trigger validates the lane total, creates the schedule, blocks overlap, writes the audit log, and marks the suggestion applied.
-6. Open **Daily plan**, choose today, and click **Generate complete plan**.
-7. Explain that the cursor-driven stored procedure covers every active segment and assigns enforcement when the unfit ratio reaches 25%.
-8. Open <http://127.0.0.1:8000/docs> and test `GET /api/segments` to prove the API is working.
-
-## 6. Test the database directly
-
-Open a new Terminal in the project folder.
-
-### Run the automatic verification
+## 6. Run all automated tests
 
 ```bash
-psql -d laneshift_bd -f database/05_verification.sql
+./scripts/test_all_mac.sh
 ```
 
-Expected starting data:
+### PostgreSQL checks
 
-| Item | Expected rows |
-| --- | ---: |
-| Corridors | 3 |
-| Road segments | 7 |
-| Traffic readings | 252 |
-| ANPR detections | 672 |
-| Manual suggestions | 4 |
-| Initial active schedules | 1 |
-| Current daily plan items | 7 |
+`database/05_verification.sql` checks:
 
-### Test the main functions
+- Base, scheduled, simulated, and decided lane totals
+- Five active scenario definitions
+- Complete daily-plan coverage
+- Trigger-created schedules
+- Rejection of an invalid simulation baseline
+- Rejection of an invalid queued-to-completed transition
+- Rejection of an invalid candidate lane total
+
+The intentional invalid rows are caught and removed inside the verification routine.
+
+### Python checks
+
+The Pytest suite checks:
+
+- A fixed random seed reproduces the same demand
+- All `N-1` safe allocations are evaluated
+- Balanced traffic prefers the baseline
+- Morning pressure benefits from additional inbound lanes
+- An incident increases queueing and waiting
+- `0/N`, `N/0`, and wrong-total arrangements are rejected
+- FastAPI request validation and scenario routing
+
+### Frontend check
+
+The Vite production build verifies that the React application compiles successfully.
+
+## 7. Useful DBMS queries for the teacher
+
+Open PostgreSQL:
 
 ```bash
 psql -d laneshift_bd
 ```
 
-Then run:
+Inspect the scenarios:
 
 ```sql
-SELECT calculate_direction_imbalance(1, date_trunc('hour', now()));
-
-SELECT unfit_vehicle_ratio(
-  1,
-  tstzrange(now() - interval '24 hours', now(), '[)')
-);
-
-SELECT * FROM recommend_lane_split(1, current_date);
-
-SELECT * FROM sustained_imbalance_analysis
-WHERE sustained_over_one_hour
-ORDER BY recorded_at DESC
-LIMIT 10;
-
-SELECT * FROM corridor_dashboard;
+SELECT scenario_code, name, inbound_rate_vph, outbound_rate_vph,
+       incident_direction, weather_speed_factor
+FROM traffic_scenarios
+ORDER BY scenario_id;
 ```
 
-Type `\q` to leave `psql`.
-
-### Prove the lane-total constraint
-
-The following test is expected to fail because segment 1 has six lanes, not seven:
+Inspect recent experiments:
 
 ```sql
-BEGIN;
-INSERT INTO reversible_lane_schedules(
-  segment_id, active_window, inbound_lanes, outbound_lanes
-) VALUES (
-  1,
-  tstzrange(now() + interval '10 days', now() + interval '10 days 2 hours', '[)'),
-  5,
-  2
-);
-ROLLBACK;
+SELECT run_id, scenario_name, segment_code,
+       baseline_inbound_lanes || '/' || baseline_outbound_lanes AS baseline,
+       selected_inbound_lanes || '/' || selected_outbound_lanes AS selected,
+       predicted_improvement_percent
+FROM simulation_run_dashboard
+ORDER BY run_id DESC;
 ```
 
-The error proves the trigger protects the business rule. If `ROLLBACK` is skipped after an expected error, run it before any other command.
+Inspect every candidate from the latest run:
 
-### Prove the overlap constraint
+```sql
+SELECT inbound_lanes, outbound_lanes, is_baseline, is_selected,
+       average_wait_seconds, max_queue_vehicles,
+       completed_vehicles, objective_score, improvement_percent
+FROM simulation_candidate_comparison
+WHERE run_id = (SELECT MAX(run_id) FROM simulation_runs)
+ORDER BY inbound_lanes;
+```
 
-1. Run `SELECT * FROM reversible_lane_schedules;` and copy one segment and time window.
-2. Try to insert another non-cancelled schedule for the same segment with an overlapping range.
-3. PostgreSQL raises an exclusion-constraint error. This proves two lane configurations cannot be active for the same road space at the same time.
+Inspect the database-owned decision trail:
 
-## 7. Test the API
+```sql
+SELECT event_type, message, details, created_at
+FROM automation_events
+WHERE run_id = (SELECT MAX(run_id) FROM simulation_runs)
+ORDER BY event_id;
+```
 
-The easiest option is Swagger:
+Type `\q` to exit PostgreSQL.
 
-1. Open <http://127.0.0.1:8000/docs>.
-2. Expand an endpoint.
-3. Click **Try it out**, then **Execute**.
+## 8. Swagger API demonstration
 
-Postman option:
+Open <http://127.0.0.1:8000/docs> and try:
 
-1. Install Postman from <https://www.postman.com/downloads/>.
-2. Click **Import**.
-3. Select `docs/LaneShift-BD.postman_collection.json`.
-4. Run the requests. Change the `suggestionId` collection variable to an ID currently shown by `GET Pending suggestions` before approving.
+- `GET /api/simulation/scenarios`
+- `POST /api/simulation/runs`
+- `GET /api/simulation/runs`
+- `GET /api/simulation/runs/{run_id}`
+- `GET /api/database/evidence`
 
-## 8. Reset the sample data
+Example request body:
 
-This removes LaneShift BD’s current demo data and recreates it. It does not delete the PostgreSQL database itself.
+```json
+{
+  "scenario_code": "morning_peak",
+  "segment_id": 1,
+  "seed": 4410
+}
+```
+
+## 9. Reset the demonstration data
+
+This recreates LaneShift BD's project tables and sample data. It does not delete the database itself.
 
 ```bash
 ./scripts/reset_database_mac.sh
 ```
 
-## 9. Common problems
+Run it before class if you want an empty simulation history.
+
+## 10. Troubleshooting
 
 ### `psql: command not found`
 
-PostgreSQL’s command folder is not on PATH. Repeat step 2.1.5, then close and reopen Terminal.
-
-### `connection to server ... failed`
-
-Open Postgres.app and confirm its server shows **Running**. Homebrew users should run `brew services start postgresql@16`.
-
-### Backend says database connection failed
-
-The recommended Postgres.app/Homebrew setup uses the macOS username and no local password. The included `.env` therefore uses:
-
-```env
-DATABASE_URL=postgresql:///laneshift_bd
-```
-
-If you installed PostgreSQL with a password-based `postgres` user, change it to:
-
-```env
-DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/laneshift_bd
-```
-
-If the password contains `@`, `:`, `/`, or spaces, URL-encode it or create a simpler project-only password.
-
-### Port 8000 or 5173 is already in use
-
-Stop an older LaneShift BD Terminal with Control+C. To find a process:
+Add the PostgreSQL binary directory to `PATH`. For Postgres.app:
 
 ```bash
-lsof -i :8000
-lsof -i :5173
+export PATH="/Applications/Postgres.app/Contents/Versions/latest/bin:$PATH"
 ```
 
-### Dashboard loads but shows a connection message
+### PostgreSQL asks for a password repeatedly
 
-Confirm <http://127.0.0.1:8000/health> works. If it does, refresh the dashboard. If it does not, read the error in the Terminal running FastAPI.
+Add `PGHOST`, `PGUSER`, and `PGPASSWORD` to `.env` as shown in section 3.
 
-## 10. What you still need to do
+### Database connection failed
 
-The project package implements the database, sample data, backend, dashboard, setup automation, and tests. Your remaining work is local and presentation-specific:
+Confirm PostgreSQL is running and verify that `DATABASE_URL` in `.env` has the correct username, password, host, port, and database.
 
-1. Install the applications on your Mac.
-2. Run setup and confirm the verification passes.
-3. Click through the demonstration sequence at least once.
-4. Replace the demo operator name if your instructor wants your own name in the audit log.
-5. Capture screenshots or a screen recording only if your instructor later requests them.
+### Port 8000 or 5173 is already used
 
+Stop an older LaneShift BD Terminal with **Control+C**, then start the project again.
+
+### Dashboard cannot reach the API
+
+Open <http://127.0.0.1:8000/health>. If it fails, inspect the backend Terminal for the database error. If it works, refresh the dashboard.
