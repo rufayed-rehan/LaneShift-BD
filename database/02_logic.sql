@@ -472,4 +472,393 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION validate_simulation_run_baseline()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_total_lanes smallint;
+BEGIN
+    SELECT total_lanes INTO v_total_lanes
+    FROM road_segments
+    WHERE segment_id = NEW.segment_id AND active;
+
+    IF v_total_lanes IS NULL THEN
+        RAISE EXCEPTION 'Active segment % not found', NEW.segment_id;
+    END IF;
+
+    IF NEW.baseline_inbound_lanes + NEW.baseline_outbound_lanes <> v_total_lanes THEN
+        RAISE EXCEPTION 'Simulation baseline % + % must equal segment % total lanes (%)',
+            NEW.baseline_inbound_lanes, NEW.baseline_outbound_lanes,
+            NEW.segment_id, v_total_lanes;
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_validate_simulation_run_baseline
+BEFORE INSERT OR UPDATE OF segment_id, baseline_inbound_lanes, baseline_outbound_lanes
+ON simulation_runs
+FOR EACH ROW EXECUTE FUNCTION validate_simulation_run_baseline();
+
+CREATE OR REPLACE FUNCTION validate_simulation_candidate_split()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_total_lanes smallint;
+    v_baseline_in smallint;
+    v_baseline_out smallint;
+BEGIN
+    SELECT rs.total_lanes, sr.baseline_inbound_lanes, sr.baseline_outbound_lanes
+    INTO v_total_lanes, v_baseline_in, v_baseline_out
+    FROM simulation_runs sr
+    JOIN road_segments rs USING (segment_id)
+    WHERE sr.run_id = NEW.run_id;
+
+    IF v_total_lanes IS NULL THEN
+        RAISE EXCEPTION 'Simulation run % not found', NEW.run_id;
+    END IF;
+
+    IF NEW.inbound_lanes + NEW.outbound_lanes <> v_total_lanes THEN
+        RAISE EXCEPTION 'Candidate lane split % + % must equal % lanes',
+            NEW.inbound_lanes, NEW.outbound_lanes, v_total_lanes;
+    END IF;
+
+    IF NEW.is_baseline IS DISTINCT FROM (
+        NEW.inbound_lanes = v_baseline_in AND NEW.outbound_lanes = v_baseline_out
+    ) THEN
+        RAISE EXCEPTION 'Run % baseline candidate must be exactly %/%',
+            NEW.run_id, v_baseline_in, v_baseline_out;
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_validate_simulation_candidate_split
+BEFORE INSERT OR UPDATE OF run_id, inbound_lanes, outbound_lanes, is_baseline
+ON simulation_candidates
+FOR EACH ROW EXECUTE FUNCTION validate_simulation_candidate_split();
+
+CREATE OR REPLACE FUNCTION prepare_simulation_run_state()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF OLD.status = NEW.status THEN
+        RETURN NEW;
+    END IF;
+
+    IF NOT (
+        (OLD.status = 'queued' AND NEW.status IN ('running', 'failed'))
+        OR
+        (OLD.status = 'running' AND NEW.status IN ('completed', 'failed'))
+    ) THEN
+        RAISE EXCEPTION 'Invalid simulation run transition: % to %', OLD.status, NEW.status;
+    END IF;
+
+    IF NEW.status = 'running' THEN
+        NEW.started_at := COALESCE(NEW.started_at, now());
+        NEW.error_message := NULL;
+    ELSIF NEW.status IN ('completed', 'failed') THEN
+        NEW.completed_at := COALESCE(NEW.completed_at, now());
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_prepare_simulation_run_state
+BEFORE UPDATE OF status ON simulation_runs
+FOR EACH ROW EXECUTE FUNCTION prepare_simulation_run_state();
+
+CREATE OR REPLACE FUNCTION log_simulation_run_state()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_event_type text;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        v_event_type := 'run_queued';
+    ELSIF OLD.status = NEW.status THEN
+        RETURN NEW;
+    ELSE
+        v_event_type := 'run_' || NEW.status;
+    END IF;
+
+    INSERT INTO automation_events(run_id, decision_id, event_type, message, details)
+    VALUES (
+        NEW.run_id,
+        (SELECT decision_id FROM automation_decisions WHERE run_id = NEW.run_id),
+        v_event_type,
+        CASE NEW.status
+            WHEN 'queued' THEN 'Simulation request stored in PostgreSQL'
+            WHEN 'running' THEN 'Python simulation worker started candidate evaluation'
+            WHEN 'completed' THEN 'Simulation and database decision workflow completed'
+            ELSE 'Simulation failed; the database retained the diagnostic message'
+        END,
+        jsonb_build_object('status', NEW.status, 'algorithm_version', NEW.algorithm_version)
+    );
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_log_simulation_run_insert
+AFTER INSERT ON simulation_runs
+FOR EACH ROW EXECUTE FUNCTION log_simulation_run_state();
+
+CREATE TRIGGER trg_log_simulation_run_update
+AFTER UPDATE OF status ON simulation_runs
+FOR EACH ROW EXECUTE FUNCTION log_simulation_run_state();
+
+CREATE OR REPLACE FUNCTION log_simulation_candidate()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    INSERT INTO automation_events(run_id, event_type, message, details)
+    VALUES (
+        NEW.run_id,
+        'candidate_evaluated',
+        format('Evaluated %s inbound / %s outbound lanes', NEW.inbound_lanes, NEW.outbound_lanes),
+        jsonb_build_object(
+            'candidate_id', NEW.candidate_id,
+            'objective_score', NEW.objective_score,
+            'average_wait_seconds', NEW.average_wait_seconds,
+            'max_queue_vehicles', NEW.max_queue_vehicles
+        )
+    );
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_log_simulation_candidate
+AFTER INSERT ON simulation_candidates
+FOR EACH ROW EXECUTE FUNCTION log_simulation_candidate();
+
+CREATE OR REPLACE FUNCTION validate_automation_decision()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_total_lanes smallint;
+    v_candidate_run bigint;
+    v_candidate_in smallint;
+    v_candidate_out smallint;
+    v_candidate_selected boolean;
+BEGIN
+    SELECT rs.total_lanes INTO v_total_lanes
+    FROM simulation_runs sr
+    JOIN road_segments rs USING (segment_id)
+    WHERE sr.run_id = NEW.run_id;
+
+    SELECT run_id, inbound_lanes, outbound_lanes, is_selected
+    INTO v_candidate_run, v_candidate_in, v_candidate_out, v_candidate_selected
+    FROM simulation_candidates
+    WHERE candidate_id = NEW.candidate_id;
+
+    IF v_candidate_run IS DISTINCT FROM NEW.run_id THEN
+        RAISE EXCEPTION 'Candidate % does not belong to run %', NEW.candidate_id, NEW.run_id;
+    END IF;
+
+    IF NEW.previous_inbound_lanes + NEW.previous_outbound_lanes <> v_total_lanes
+       OR NEW.selected_inbound_lanes + NEW.selected_outbound_lanes <> v_total_lanes THEN
+        RAISE EXCEPTION 'Automation decision lane totals must equal %', v_total_lanes;
+    END IF;
+
+    IF NEW.selected_inbound_lanes <> v_candidate_in
+       OR NEW.selected_outbound_lanes <> v_candidate_out THEN
+        RAISE EXCEPTION 'Decision split must match selected candidate %', NEW.candidate_id;
+    END IF;
+
+    IF NOT v_candidate_selected THEN
+        RAISE EXCEPTION 'Automation decision candidate % must be marked selected', NEW.candidate_id;
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_validate_automation_decision
+BEFORE INSERT OR UPDATE OF run_id, candidate_id, selected_inbound_lanes, selected_outbound_lanes
+ON automation_decisions
+FOR EACH ROW EXECUTE FUNCTION validate_automation_decision();
+
+CREATE OR REPLACE FUNCTION finalize_simulation_run(p_run_id bigint)
+RETURNS bigint
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_run simulation_runs%ROWTYPE;
+    v_total_lanes smallint;
+    v_baseline simulation_candidates%ROWTYPE;
+    v_best simulation_candidates%ROWTYPE;
+    v_selected simulation_candidates%ROWTYPE;
+    v_threshold numeric := setting_numeric('minimum_simulation_improvement_percent', 10.0);
+    v_improvement numeric;
+    v_decision_id bigint;
+    v_status varchar(20);
+BEGIN
+    SELECT * INTO v_run
+    FROM simulation_runs
+    WHERE run_id = p_run_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Simulation run % not found', p_run_id;
+    END IF;
+
+    IF v_run.status <> 'running' THEN
+        RAISE EXCEPTION 'Simulation run % must be running before finalization', p_run_id;
+    END IF;
+
+    SELECT total_lanes INTO v_total_lanes
+    FROM road_segments WHERE segment_id = v_run.segment_id;
+
+    IF (SELECT COUNT(*) FROM simulation_candidates WHERE run_id = p_run_id)
+       <> v_total_lanes - 1 THEN
+        RAISE EXCEPTION 'Run % requires % valid candidates before finalization',
+            p_run_id, v_total_lanes - 1;
+    END IF;
+
+    SELECT * INTO v_baseline
+    FROM simulation_candidates
+    WHERE run_id = p_run_id AND is_baseline;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Run % has no baseline candidate', p_run_id;
+    END IF;
+
+    UPDATE simulation_candidates
+    SET improvement_percent = CASE
+        WHEN v_baseline.objective_score = 0 THEN 0
+        ELSE ROUND(
+            (v_baseline.objective_score - objective_score)
+            / v_baseline.objective_score * 100,
+            2
+        )
+    END
+    WHERE run_id = p_run_id;
+
+    SELECT * INTO v_best
+    FROM simulation_candidates
+    WHERE run_id = p_run_id
+    ORDER BY objective_score, ABS(inbound_lanes - v_run.baseline_inbound_lanes), candidate_id
+    LIMIT 1;
+
+    v_improvement := COALESCE(v_best.improvement_percent, 0);
+    IF v_best.candidate_id <> v_baseline.candidate_id AND v_improvement >= v_threshold THEN
+        v_selected := v_best;
+    ELSE
+        v_selected := v_baseline;
+        v_improvement := 0;
+    END IF;
+
+    UPDATE simulation_candidates
+    SET is_selected = (candidate_id = v_selected.candidate_id)
+    WHERE run_id = p_run_id;
+
+    v_status := CASE
+        WHEN v_run.execution_mode = 'simulation' THEN 'auto_applied'
+        ELSE 'pending_confirmation'
+    END;
+
+    INSERT INTO automation_decisions(
+        run_id, candidate_id, decision_type,
+        previous_inbound_lanes, previous_outbound_lanes,
+        selected_inbound_lanes, selected_outbound_lanes,
+        predicted_improvement_percent, status, reason
+    ) VALUES (
+        p_run_id,
+        v_selected.candidate_id,
+        CASE WHEN v_selected.candidate_id = v_baseline.candidate_id
+            THEN 'retain' ELSE 'reallocate' END,
+        v_run.baseline_inbound_lanes,
+        v_run.baseline_outbound_lanes,
+        v_selected.inbound_lanes,
+        v_selected.outbound_lanes,
+        v_improvement,
+        v_status,
+        CASE WHEN v_selected.candidate_id = v_baseline.candidate_id THEN
+            format(
+                'Retained the baseline because no candidate improved the objective by the required %s%%',
+                v_threshold
+            )
+        ELSE
+            format(
+                'Selected %s/%s after simulation reduced the congestion objective by %s%%',
+                v_selected.inbound_lanes, v_selected.outbound_lanes, v_improvement
+            )
+        END
+    )
+    RETURNING decision_id INTO v_decision_id;
+
+    INSERT INTO automation_events(run_id, decision_id, event_type, message, details)
+    VALUES (
+        p_run_id,
+        v_decision_id,
+        CASE WHEN v_selected.candidate_id = v_baseline.candidate_id
+            THEN 'allocation_retained' ELSE 'allocation_selected' END,
+        CASE WHEN v_selected.candidate_id = v_baseline.candidate_id
+            THEN format('Database retained baseline %s/%s', v_selected.inbound_lanes, v_selected.outbound_lanes)
+            ELSE format('Database selected and applied simulated allocation %s/%s', v_selected.inbound_lanes, v_selected.outbound_lanes)
+        END,
+        jsonb_build_object(
+            'baseline_candidate_id', v_baseline.candidate_id,
+            'selected_candidate_id', v_selected.candidate_id,
+            'minimum_improvement_percent', v_threshold,
+            'predicted_improvement_percent', v_improvement
+        )
+    );
+
+    UPDATE simulation_runs SET status = 'completed' WHERE run_id = p_run_id;
+    RETURN v_decision_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION override_automation_decision(
+    p_run_id bigint,
+    p_operator varchar,
+    p_reason text
+)
+RETURNS bigint
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_decision_id bigint;
+BEGIN
+    IF length(trim(p_operator)) < 2 OR length(trim(p_reason)) < 5 THEN
+        RAISE EXCEPTION 'Operator name and a meaningful override reason are required';
+    END IF;
+
+    UPDATE automation_decisions
+    SET status = 'overridden',
+        overridden_by = trim(p_operator),
+        override_reason = trim(p_reason),
+        overridden_at = now()
+    WHERE run_id = p_run_id
+      AND status <> 'overridden'
+    RETURNING decision_id INTO v_decision_id;
+
+    IF v_decision_id IS NULL THEN
+        RAISE EXCEPTION 'Active automation decision for run % not found', p_run_id;
+    END IF;
+
+    INSERT INTO automation_events(run_id, decision_id, event_type, message, details)
+    VALUES (
+        p_run_id,
+        v_decision_id,
+        'operator_override',
+        format('Decision overridden by %s', trim(p_operator)),
+        jsonb_build_object('reason', trim(p_reason))
+    );
+
+    RETURN v_decision_id;
+END;
+$$;
+
 COMMIT;

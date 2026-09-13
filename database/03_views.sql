@@ -139,5 +139,83 @@ SELECT
 FROM ranked
 GROUP BY corridor_id, corridor_name;
 
-COMMIT;
+CREATE OR REPLACE VIEW simulation_candidate_comparison AS
+SELECT
+    sr.run_id,
+    ts.scenario_code,
+    ts.name AS scenario_name,
+    rs.segment_code,
+    rs.name AS segment_name,
+    sc.candidate_id,
+    sc.inbound_lanes,
+    sc.outbound_lanes,
+    sc.is_baseline,
+    sc.is_selected,
+    sc.average_wait_seconds,
+    sc.p95_wait_seconds,
+    sc.max_queue_vehicles,
+    sc.completed_vehicles,
+    sc.unprocessed_vehicles,
+    sc.average_speed_kph,
+    sc.throughput_vph,
+    sc.objective_score,
+    sc.improvement_percent,
+    RANK() OVER (
+        PARTITION BY sr.run_id
+        ORDER BY sc.objective_score, sc.candidate_id
+    ) AS performance_rank
+FROM simulation_candidates sc
+JOIN simulation_runs sr USING (run_id)
+JOIN traffic_scenarios ts USING (scenario_id)
+JOIN road_segments rs USING (segment_id);
 
+CREATE OR REPLACE VIEW simulation_run_dashboard AS
+SELECT
+    sr.run_id,
+    sr.status AS run_status,
+    sr.execution_mode,
+    sr.random_seed,
+    sr.duration_minutes,
+    sr.algorithm_version,
+    sr.requested_at,
+    sr.started_at,
+    sr.completed_at,
+    ts.scenario_code,
+    ts.name AS scenario_name,
+    ts.description AS scenario_description,
+    rs.segment_id,
+    rs.segment_code,
+    rs.name AS segment_name,
+    rs.total_lanes,
+    sr.baseline_inbound_lanes,
+    sr.baseline_outbound_lanes,
+    baseline.average_wait_seconds AS baseline_wait_seconds,
+    baseline.max_queue_vehicles AS baseline_max_queue,
+    baseline.completed_vehicles AS baseline_completed_vehicles,
+    baseline.average_speed_kph AS baseline_speed_kph,
+    selected.inbound_lanes AS selected_inbound_lanes,
+    selected.outbound_lanes AS selected_outbound_lanes,
+    selected.average_wait_seconds AS selected_wait_seconds,
+    selected.max_queue_vehicles AS selected_max_queue,
+    selected.completed_vehicles AS selected_completed_vehicles,
+    selected.average_speed_kph AS selected_speed_kph,
+    selected.throughput_vph AS selected_throughput_vph,
+    ad.decision_id,
+    ad.decision_type,
+    ad.predicted_improvement_percent,
+    ad.status AS decision_status,
+    ad.reason AS decision_reason,
+    ad.decided_at,
+    ad.overridden_by,
+    ad.override_reason,
+    ad.overridden_at
+FROM simulation_runs sr
+JOIN traffic_scenarios ts USING (scenario_id)
+JOIN road_segments rs USING (segment_id)
+LEFT JOIN simulation_candidates baseline
+    ON baseline.run_id = sr.run_id AND baseline.is_baseline
+LEFT JOIN simulation_candidates selected
+    ON selected.run_id = sr.run_id AND selected.is_selected
+LEFT JOIN automation_decisions ad ON ad.run_id = sr.run_id;
+
+COMMIT;

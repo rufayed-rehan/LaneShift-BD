@@ -6,7 +6,15 @@ DROP VIEW IF EXISTS corridor_dashboard CASCADE;
 DROP VIEW IF EXISTS segment_performance CASCADE;
 DROP VIEW IF EXISTS slow_vehicle_signature CASCADE;
 DROP VIEW IF EXISTS sustained_imbalance_analysis CASCADE;
+DROP VIEW IF EXISTS simulation_run_dashboard CASCADE;
+DROP VIEW IF EXISTS simulation_candidate_comparison CASCADE;
 
+DROP TABLE IF EXISTS automation_events CASCADE;
+DROP TABLE IF EXISTS automation_decisions CASCADE;
+DROP TABLE IF EXISTS simulation_samples CASCADE;
+DROP TABLE IF EXISTS simulation_candidates CASCADE;
+DROP TABLE IF EXISTS simulation_runs CASCADE;
+DROP TABLE IF EXISTS traffic_scenarios CASCADE;
 DROP TABLE IF EXISTS enforcement_deployments CASCADE;
 DROP TABLE IF EXISTS enforcement_teams CASCADE;
 DROP TABLE IF EXISTS plan_items CASCADE;
@@ -58,6 +66,148 @@ CREATE TABLE road_segments (
 );
 
 CREATE INDEX idx_road_segments_corridor ON road_segments(corridor_id);
+
+CREATE TABLE traffic_scenarios (
+    scenario_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    scenario_code varchar(30) NOT NULL UNIQUE,
+    name varchar(100) NOT NULL,
+    description text NOT NULL,
+    inbound_rate_vph integer NOT NULL CHECK (inbound_rate_vph BETWEEN 0 AND 20000),
+    outbound_rate_vph integer NOT NULL CHECK (outbound_rate_vph BETWEEN 0 AND 20000),
+    inbound_surge_multiplier numeric(5,2) NOT NULL DEFAULT 1.00
+        CHECK (inbound_surge_multiplier BETWEEN 0.10 AND 5.00),
+    outbound_surge_multiplier numeric(5,2) NOT NULL DEFAULT 1.00
+        CHECK (outbound_surge_multiplier BETWEEN 0.10 AND 5.00),
+    surge_start_minute smallint CHECK (surge_start_minute BETWEEN 0 AND 239),
+    incident_direction varchar(10)
+        CHECK (incident_direction IN ('inbound', 'outbound', 'both')),
+    incident_start_minute smallint CHECK (incident_start_minute BETWEEN 0 AND 239),
+    incident_capacity_factor numeric(4,2) NOT NULL DEFAULT 1.00
+        CHECK (incident_capacity_factor BETWEEN 0.10 AND 1.00),
+    weather_speed_factor numeric(4,2) NOT NULL DEFAULT 1.00
+        CHECK (weather_speed_factor BETWEEN 0.30 AND 1.00),
+    duration_minutes smallint NOT NULL DEFAULT 60
+        CHECK (duration_minutes BETWEEN 15 AND 240),
+    active boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT ck_scenario_incident_details CHECK (
+        (incident_direction IS NULL AND incident_start_minute IS NULL)
+        OR
+        (incident_direction IS NOT NULL AND incident_start_minute IS NOT NULL)
+    )
+);
+
+CREATE TABLE simulation_runs (
+    run_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    scenario_id bigint NOT NULL REFERENCES traffic_scenarios(scenario_id) ON DELETE RESTRICT,
+    segment_id bigint NOT NULL REFERENCES road_segments(segment_id) ON DELETE RESTRICT,
+    random_seed integer NOT NULL CHECK (random_seed BETWEEN 1 AND 2147483647),
+    duration_minutes smallint NOT NULL CHECK (duration_minutes BETWEEN 15 AND 240),
+    baseline_inbound_lanes smallint NOT NULL CHECK (baseline_inbound_lanes > 0),
+    baseline_outbound_lanes smallint NOT NULL CHECK (baseline_outbound_lanes > 0),
+    execution_mode varchar(15) NOT NULL DEFAULT 'simulation'
+        CHECK (execution_mode IN ('simulation', 'advisory')),
+    algorithm_version varchar(30) NOT NULL DEFAULT 'simpy-search-v1',
+    status varchar(12) NOT NULL DEFAULT 'queued'
+        CHECK (status IN ('queued', 'running', 'completed', 'failed')),
+    error_message text,
+    requested_at timestamptz NOT NULL DEFAULT now(),
+    started_at timestamptz,
+    completed_at timestamptz,
+    CONSTRAINT ck_run_baseline_lane_total CHECK (
+        baseline_inbound_lanes > 0 AND baseline_outbound_lanes > 0
+    ),
+    CONSTRAINT ck_run_timestamps CHECK (
+        completed_at IS NULL OR started_at IS NULL OR completed_at >= started_at
+    )
+);
+
+CREATE INDEX idx_simulation_runs_requested
+    ON simulation_runs(requested_at DESC);
+CREATE INDEX idx_simulation_runs_scenario
+    ON simulation_runs(scenario_id, requested_at DESC);
+
+CREATE TABLE simulation_candidates (
+    candidate_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_id bigint NOT NULL REFERENCES simulation_runs(run_id) ON DELETE CASCADE,
+    inbound_lanes smallint NOT NULL CHECK (inbound_lanes > 0),
+    outbound_lanes smallint NOT NULL CHECK (outbound_lanes > 0),
+    is_baseline boolean NOT NULL DEFAULT false,
+    average_wait_seconds numeric(12,2) NOT NULL CHECK (average_wait_seconds >= 0),
+    p95_wait_seconds numeric(12,2) NOT NULL CHECK (p95_wait_seconds >= 0),
+    max_queue_vehicles integer NOT NULL CHECK (max_queue_vehicles >= 0),
+    completed_vehicles integer NOT NULL CHECK (completed_vehicles >= 0),
+    unprocessed_vehicles integer NOT NULL CHECK (unprocessed_vehicles >= 0),
+    average_speed_kph numeric(6,2) NOT NULL CHECK (average_speed_kph >= 0),
+    throughput_vph numeric(10,2) NOT NULL CHECK (throughput_vph >= 0),
+    objective_score numeric(14,4) NOT NULL CHECK (objective_score >= 0),
+    improvement_percent numeric(8,2),
+    is_selected boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (run_id, inbound_lanes, outbound_lanes)
+);
+
+CREATE UNIQUE INDEX uq_simulation_one_baseline
+    ON simulation_candidates(run_id) WHERE is_baseline;
+CREATE UNIQUE INDEX uq_simulation_one_selected
+    ON simulation_candidates(run_id) WHERE is_selected;
+CREATE INDEX idx_simulation_candidates_score
+    ON simulation_candidates(run_id, objective_score);
+
+CREATE TABLE simulation_samples (
+    sample_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    candidate_id bigint NOT NULL REFERENCES simulation_candidates(candidate_id) ON DELETE CASCADE,
+    simulated_minute smallint NOT NULL CHECK (simulated_minute BETWEEN 0 AND 240),
+    inbound_queue integer NOT NULL CHECK (inbound_queue >= 0),
+    outbound_queue integer NOT NULL CHECK (outbound_queue >= 0),
+    cumulative_completed integer NOT NULL CHECK (cumulative_completed >= 0),
+    inbound_average_wait_seconds numeric(12,2) NOT NULL CHECK (inbound_average_wait_seconds >= 0),
+    outbound_average_wait_seconds numeric(12,2) NOT NULL CHECK (outbound_average_wait_seconds >= 0),
+    inbound_speed_kph numeric(6,2) NOT NULL CHECK (inbound_speed_kph >= 0),
+    outbound_speed_kph numeric(6,2) NOT NULL CHECK (outbound_speed_kph >= 0),
+    UNIQUE (candidate_id, simulated_minute)
+);
+
+CREATE INDEX idx_simulation_samples_candidate_time
+    ON simulation_samples(candidate_id, simulated_minute);
+
+CREATE TABLE automation_decisions (
+    decision_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_id bigint NOT NULL UNIQUE REFERENCES simulation_runs(run_id) ON DELETE CASCADE,
+    candidate_id bigint NOT NULL REFERENCES simulation_candidates(candidate_id) ON DELETE RESTRICT,
+    decision_type varchar(12) NOT NULL CHECK (decision_type IN ('retain', 'reallocate')),
+    previous_inbound_lanes smallint NOT NULL CHECK (previous_inbound_lanes > 0),
+    previous_outbound_lanes smallint NOT NULL CHECK (previous_outbound_lanes > 0),
+    selected_inbound_lanes smallint NOT NULL CHECK (selected_inbound_lanes > 0),
+    selected_outbound_lanes smallint NOT NULL CHECK (selected_outbound_lanes > 0),
+    predicted_improvement_percent numeric(8,2) NOT NULL,
+    status varchar(20) NOT NULL
+        CHECK (status IN ('auto_applied', 'pending_confirmation', 'overridden')),
+    reason text NOT NULL,
+    decided_at timestamptz NOT NULL DEFAULT now(),
+    overridden_by varchar(100),
+    override_reason text,
+    overridden_at timestamptz,
+    CONSTRAINT ck_decision_override_fields CHECK (
+        (status <> 'overridden' AND overridden_by IS NULL AND overridden_at IS NULL)
+        OR
+        (status = 'overridden' AND overridden_by IS NOT NULL
+         AND override_reason IS NOT NULL AND overridden_at IS NOT NULL)
+    )
+);
+
+CREATE TABLE automation_events (
+    event_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_id bigint NOT NULL REFERENCES simulation_runs(run_id) ON DELETE CASCADE,
+    decision_id bigint REFERENCES automation_decisions(decision_id) ON DELETE CASCADE,
+    event_type varchar(40) NOT NULL,
+    message text NOT NULL,
+    details jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_automation_events_run_time
+    ON automation_events(run_id, created_at, event_id);
 
 CREATE TABLE anpr_cameras (
     camera_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -238,4 +388,3 @@ CREATE INDEX idx_deployments_team_window
     ON enforcement_deployments USING gist(team_id, deployment_window);
 
 COMMIT;
-
