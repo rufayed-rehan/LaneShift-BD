@@ -1,8 +1,21 @@
+Project LaneShift_BD {
+  database_type: 'PostgreSQL'
+  Note: 'Database-centered traffic simulation and reversible-lane optimization'
+}
+
+Table app_settings {
+  setting_key text [pk]
+  setting_value numeric [not null]
+  description text [not null]
+}
+
 Table corridors {
   corridor_id bigint [pk, increment]
   name varchar [not null, unique]
   city varchar [not null]
+  description text
   active boolean [not null]
+  created_at timestamptz [not null]
 }
 
 Table road_segments {
@@ -10,18 +23,126 @@ Table road_segments {
   corridor_id bigint [not null, ref: > corridors.corridor_id]
   segment_code varchar [not null, unique]
   name varchar [not null]
+  inbound_label varchar [not null]
+  outbound_label varchar [not null]
   total_lanes smallint [not null]
   base_inbound_lanes smallint [not null]
   base_outbound_lanes smallint [not null]
+  length_km numeric [not null]
   capacity_per_lane integer [not null]
+  speed_limit_kph numeric [not null]
   active boolean [not null]
+}
+
+Table traffic_scenarios {
+  scenario_id bigint [pk, increment]
+  scenario_code varchar [not null, unique]
+  name varchar [not null]
+  description text [not null]
+  inbound_rate_vph integer [not null]
+  outbound_rate_vph integer [not null]
+  inbound_surge_multiplier numeric [not null]
+  outbound_surge_multiplier numeric [not null]
+  surge_start_minute smallint
+  incident_direction varchar
+  incident_start_minute smallint
+  incident_capacity_factor numeric [not null]
+  weather_speed_factor numeric [not null]
+  duration_minutes smallint [not null]
+  active boolean [not null]
+}
+
+Table simulation_runs {
+  run_id bigint [pk, increment]
+  scenario_id bigint [not null, ref: > traffic_scenarios.scenario_id]
+  segment_id bigint [not null, ref: > road_segments.segment_id]
+  random_seed integer [not null]
+  duration_minutes smallint [not null]
+  baseline_inbound_lanes smallint [not null]
+  baseline_outbound_lanes smallint [not null]
+  execution_mode varchar [not null]
+  algorithm_version varchar [not null]
+  status varchar [not null]
+  error_message text
+  requested_at timestamptz [not null]
+  started_at timestamptz
+  completed_at timestamptz
+}
+
+Table simulation_candidates {
+  candidate_id bigint [pk, increment]
+  run_id bigint [not null, ref: > simulation_runs.run_id]
+  inbound_lanes smallint [not null]
+  outbound_lanes smallint [not null]
+  is_baseline boolean [not null]
+  average_wait_seconds numeric [not null]
+  p95_wait_seconds numeric [not null]
+  max_queue_vehicles integer [not null]
+  completed_vehicles integer [not null]
+  unprocessed_vehicles integer [not null]
+  average_speed_kph numeric [not null]
+  throughput_vph numeric [not null]
+  objective_score numeric [not null]
+  improvement_percent numeric
+  is_selected boolean [not null]
+
+  indexes {
+    (run_id, inbound_lanes, outbound_lanes) [unique]
+  }
+}
+
+Table simulation_samples {
+  sample_id bigint [pk, increment]
+  candidate_id bigint [not null, ref: > simulation_candidates.candidate_id]
+  simulated_minute smallint [not null]
+  inbound_queue integer [not null]
+  outbound_queue integer [not null]
+  cumulative_completed integer [not null]
+  inbound_average_wait_seconds numeric [not null]
+  outbound_average_wait_seconds numeric [not null]
+  inbound_speed_kph numeric [not null]
+  outbound_speed_kph numeric [not null]
+
+  indexes {
+    (candidate_id, simulated_minute) [unique]
+  }
+}
+
+Table automation_decisions {
+  decision_id bigint [pk, increment]
+  run_id bigint [not null, unique, ref: > simulation_runs.run_id]
+  candidate_id bigint [not null, ref: > simulation_candidates.candidate_id]
+  decision_type varchar [not null]
+  previous_inbound_lanes smallint [not null]
+  previous_outbound_lanes smallint [not null]
+  selected_inbound_lanes smallint [not null]
+  selected_outbound_lanes smallint [not null]
+  predicted_improvement_percent numeric [not null]
+  status varchar [not null]
+  reason text [not null]
+  decided_at timestamptz [not null]
+  overridden_by varchar
+  override_reason text
+  overridden_at timestamptz
+}
+
+Table automation_events {
+  event_id bigint [pk, increment]
+  run_id bigint [not null, ref: > simulation_runs.run_id]
+  decision_id bigint [ref: > automation_decisions.decision_id]
+  event_type varchar [not null]
+  message text [not null]
+  details jsonb [not null]
+  created_at timestamptz [not null]
 }
 
 Table anpr_cameras {
   camera_id bigint [pk, increment]
   segment_id bigint [not null, ref: > road_segments.segment_id]
   camera_code varchar [not null, unique]
+  location_description text [not null]
   monitored_direction varchar [not null]
+  active boolean [not null]
 }
 
 Table traffic_readings {
@@ -32,6 +153,7 @@ Table traffic_readings {
   outbound_vehicle_count integer [not null]
   avg_inbound_speed_kph numeric [not null]
   avg_outbound_speed_kph numeric [not null]
+  source varchar [not null]
 }
 
 Table vehicles {
@@ -39,6 +161,7 @@ Table vehicles {
   plate_number varchar [not null, unique]
   vehicle_type varchar [not null]
   registration_date date [not null]
+  owner_district varchar
 }
 
 Table vehicle_fitness_status {
@@ -57,6 +180,8 @@ Table anpr_detections {
   segment_id bigint [not null, ref: > road_segments.segment_id]
   detected_at timestamptz [not null]
   travel_direction varchar [not null]
+  observed_speed_kph numeric
+  confidence numeric [not null]
 }
 
 Table reversible_lane_suggestions {
@@ -64,9 +189,12 @@ Table reversible_lane_suggestions {
   segment_id bigint [not null, ref: > road_segments.segment_id]
   evidence_window tstzrange [not null]
   proposed_window tstzrange [not null]
+  measured_imbalance_ratio numeric [not null]
+  measured_unfit_ratio numeric [not null]
   recommended_inbound_lanes smallint [not null]
   recommended_outbound_lanes smallint [not null]
   status varchar [not null]
+  reason text [not null]
 }
 
 Table reversible_lane_schedules {
@@ -79,10 +207,23 @@ Table reversible_lane_schedules {
   status varchar [not null]
 }
 
+Table lane_change_log {
+  log_id bigint [pk, increment]
+  suggestion_id bigint [ref: > reversible_lane_suggestions.suggestion_id]
+  schedule_id bigint [ref: > reversible_lane_schedules.schedule_id]
+  segment_id bigint [not null, ref: > road_segments.segment_id]
+  action varchar [not null]
+  actor varchar [not null]
+  details jsonb [not null]
+  logged_at timestamptz [not null]
+}
+
 Table reallocation_plans {
   plan_id bigint [pk, increment]
   plan_date date [not null, unique]
   status varchar [not null]
+  generated_at timestamptz [not null]
+  generated_by varchar [not null]
 }
 
 Table plan_items {
@@ -90,13 +231,19 @@ Table plan_items {
   plan_id bigint [not null, ref: > reallocation_plans.plan_id]
   segment_id bigint [not null, ref: > road_segments.segment_id]
   suggestion_id bigint [ref: > reversible_lane_suggestions.suggestion_id]
+  recommended_inbound_lanes smallint [not null]
+  recommended_outbound_lanes smallint [not null]
   action varchar [not null]
+  unfit_ratio numeric [not null]
+  rationale text [not null]
 }
 
 Table enforcement_teams {
   team_id bigint [pk, increment]
   team_code varchar [not null, unique]
   team_name varchar [not null]
+  base_location varchar [not null]
+  active boolean [not null]
 }
 
 Table enforcement_deployments {
@@ -105,5 +252,6 @@ Table enforcement_deployments {
   segment_id bigint [not null, ref: > road_segments.segment_id]
   plan_item_id bigint [ref: > plan_items.plan_item_id]
   deployment_window tstzrange [not null]
+  status varchar [not null]
+  reason text [not null]
 }
-
