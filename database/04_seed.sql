@@ -3,7 +3,9 @@ BEGIN;
 INSERT INTO app_settings(setting_key, setting_value, description) VALUES
     ('imbalance_threshold', 1.50, 'Minimum directional ratio that counts as an imbalance'),
     ('unfit_vehicle_threshold', 0.25, 'Share of unfit detections that triggers enforcement'),
-    ('low_speed_ratio', 0.45, 'Share of speed limit used by the slow-vehicle signature');
+    ('low_speed_ratio', 0.45, 'Share of speed limit used by the slow-vehicle signature'),
+    ('minimum_simulation_improvement_percent', 10.00,
+        'Required simulated congestion improvement before automatic reallocation');
 
 INSERT INTO corridors(name, description) VALUES
     ('Airport Road', 'Uttara to central Dhaka airport approach'),
@@ -22,6 +24,44 @@ INSERT INTO road_segments(
     (2, 'MIR-02', 'Technical to Shyamoli', 'Toward Dhanmondi', 'Toward Technical', 4, 2, 2, 2.10, 1500, 45),
     (3, 'PRA-01', 'Badda to Rampura', 'Toward Malibagh', 'Toward Badda', 6, 3, 3, 3.70, 1600, 50),
     (3, 'PRA-02', 'Rampura to Malibagh', 'Toward Malibagh', 'Toward Rampura', 4, 2, 2, 2.90, 1450, 45);
+
+INSERT INTO traffic_scenarios(
+    scenario_code, name, description,
+    inbound_rate_vph, outbound_rate_vph,
+    inbound_surge_multiplier, outbound_surge_multiplier, surge_start_minute,
+    incident_direction, incident_start_minute, incident_capacity_factor,
+    weather_speed_factor, duration_minutes
+) VALUES
+    (
+        'balanced', 'Balanced traffic',
+        'Normal traffic with similar demand in both directions; the fixed split should remain suitable.',
+        2100, 2000, 1.00, 1.00, NULL,
+        NULL, NULL, 1.00, 1.00, 60
+    ),
+    (
+        'morning_peak', 'Morning inbound surge',
+        'Inbound commuter demand rises after 20 minutes and creates sustained directional pressure.',
+        4700, 1450, 1.28, 1.00, 20,
+        NULL, NULL, 1.00, 1.00, 60
+    ),
+    (
+        'evening_peak', 'Evening outbound surge',
+        'Outbound commuter demand rises after 20 minutes and reverses the morning pressure pattern.',
+        1500, 4550, 1.00, 1.30, 20,
+        NULL, NULL, 1.00, 1.00, 60
+    ),
+    (
+        'inbound_accident', 'Inbound accident',
+        'An incident begins after 20 minutes and sharply reduces inbound lane capacity.',
+        3900, 1500, 1.10, 1.00, 15,
+        'inbound', 20, 0.48, 0.82, 60
+    ),
+    (
+        'heavy_rain', 'Heavy rain',
+        'Rain reduces traffic speed and effective capacity while inbound demand remains elevated.',
+        3600, 1900, 1.18, 1.00, 25,
+        'both', 0, 0.72, 0.68, 60
+    );
 
 INSERT INTO anpr_cameras(segment_id, camera_code, location_description, monitored_direction) VALUES
     (1, 'CAM-AIR-01', 'Airport Road north gantry', 'both'),
