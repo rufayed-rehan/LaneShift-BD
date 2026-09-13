@@ -9,17 +9,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from . import db
+from . import simulation_service
 
 
 app = FastAPI(
     title="LaneShift BD API",
-    version="1.0.0",
-    description="Thin API over the PostgreSQL decision engine for reversible lanes.",
+    version="2.0.0",
+    description=(
+        "Database-centered traffic simulation and automated reversible-lane "
+        "optimization for Dhaka."
+    ),
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,9 +39,25 @@ class RejectionRequest(BaseModel):
     rejected_by: str = Field(min_length=2, max_length=100)
 
 
+class SimulationRunRequest(BaseModel):
+    scenario_code: str = Field(min_length=2, max_length=30, examples=["morning_peak"])
+    segment_id: int = Field(default=1, ge=1)
+    seed: int = Field(default=4410, ge=1, le=2147483647)
+
+
+class OverrideRequest(BaseModel):
+    operator: str = Field(min_length=2, max_length=100, examples=["teacher.demo"])
+    reason: str = Field(min_length=5, max_length=500)
+
+
 @app.get("/")
 def root() -> dict[str, str]:
-    return {"name": "LaneShift BD API", "docs": "/docs", "health": "/health"}
+    return {
+        "name": "LaneShift BD Traffic Digital Twin API",
+        "version": "2.0.0",
+        "docs": "/docs",
+        "health": "/health",
+    }
 
 
 @app.get("/health")
@@ -63,9 +84,74 @@ def dashboard_summary() -> dict:
                 WHERE now() <@ active_window AND status IN ('scheduled', 'active')) AS active_reallocations,
             (SELECT COUNT(*) FROM enforcement_deployments
                 WHERE now() <@ deployment_window AND status IN ('scheduled', 'dispatched')) AS active_deployments,
-            COALESCE((SELECT ROUND(AVG(unfit_ratio) * 100, 1) FROM segment_performance), 0) AS average_unfit_percent
+            COALESCE((SELECT ROUND(AVG(unfit_ratio) * 100, 1) FROM segment_performance), 0) AS average_unfit_percent,
+            (SELECT COUNT(*) FROM simulation_runs) AS simulation_runs,
+            COALESCE((
+                SELECT predicted_improvement_percent
+                FROM automation_decisions
+                ORDER BY decided_at DESC, decision_id DESC
+                LIMIT 1
+            ), 0) AS latest_simulation_improvement
         """
     ) or {}
+
+
+@app.get("/api/simulation/scenarios")
+def simulation_scenarios() -> list[dict]:
+    return simulation_service.list_scenarios()
+
+
+@app.post("/api/simulation/runs", status_code=201)
+def start_simulation(payload: SimulationRunRequest) -> dict:
+    try:
+        return simulation_service.run_simulation(
+            scenario_code=payload.scenario_code,
+            segment_id=payload.segment_id,
+            seed=payload.seed,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except psycopg.Error as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"PostgreSQL rejected the simulation workflow: {exc}",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Simulation failed: {exc}") from exc
+
+
+@app.get("/api/simulation/runs")
+def simulation_runs(limit: int = Query(default=20, ge=1, le=100)) -> list[dict]:
+    return simulation_service.list_runs(limit)
+
+
+@app.get("/api/simulation/runs/{run_id}")
+def simulation_run_detail(run_id: int) -> dict:
+    run = simulation_service.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Simulation run not found")
+    return run
+
+
+@app.post("/api/simulation/runs/{run_id}/override")
+def override_simulation(run_id: int, payload: OverrideRequest) -> dict:
+    try:
+        return simulation_service.override_decision(
+            run_id=run_id,
+            operator=payload.operator,
+            reason=payload.reason,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except psycopg.Error as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/database/evidence")
+def database_evidence() -> dict:
+    return simulation_service.database_evidence()
 
 
 @app.get("/api/dashboard/corridors")
@@ -248,4 +334,3 @@ def plan_for_date(plan_date: date) -> dict:
         (plan["plan_id"],),
     )
     return plan
-
